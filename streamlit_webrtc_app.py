@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from collections import deque
@@ -280,6 +281,25 @@ st.set_page_config(
     layout="wide",
 )
 
+# ---- TURN/STUN Configuration (read from env for Render.com) ----
+def get_rtc_config() -> RTCConfiguration:
+    """Build WebRTC config with TURN from environment variables."""
+    ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+    
+    turn_url = os.getenv("TURN_URL")
+    turn_username = os.getenv("TURN_USERNAME")
+    turn_password = os.getenv("TURN_PASSWORD")
+    
+    if turn_url and turn_username and turn_password:
+        ice_servers.append({
+            "urls": [turn_url],
+            "username": turn_username,
+            "credential": turn_password
+        })
+    
+    return RTCConfiguration({"iceServers": ice_servers})
+
+
 # ---- App header ----
 st.title("Smart Queue Monitor", icon=":material/monitor_heart:")
 st.caption("Live WebRTC feed · YOLOv8 + DeepSORT · Industrial monitoring")
@@ -293,7 +313,7 @@ with st.sidebar:
              icon=":material/check_circle:" if has_gpu else ":material/warning:",
              color="green" if has_gpu else "orange")
 
-    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+    rtc_config = get_rtc_config()
 
     st.subheader("Queue Zone (copper)")
     q_x1 = st.number_input("X1", value=50, min_value=0, max_value=959, key="q_x1")
