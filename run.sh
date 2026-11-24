@@ -1,4 +1,4 @@
 #!/bin/bash
-pip install --force-reinstall setuptools
+pip install "setuptools<=69.5.1"
 pip install -r requirements.txt
-streamlit run streamlit_webrtc_app.py --server.port $PORT --server.address 0.0.0.0
+streamlit run streamlit_app.py --server.port ${PORT:-8501} --server.address 0.0.0.0

@@ -1,7 +1,28 @@
+"""
+Smart Queue Monitor — Live WebRTC Dashboard
+Industrial monitoring aesthetic: copper accents, technical typography, zero fluff.
+Run: streamlit run streamlit_webrtc_app.py
+"""
 import os
+import sys
+import tempfile
 import threading
 import time
 from collections import deque
+
+# Prevent permission issues with Ultralytics settings in restricted environments
+if "YOLO_CONFIG_DIR" not in os.environ:
+    os.environ["YOLO_CONFIG_DIR"] = tempfile.gettempdir()
+
+# Ensure pkg_resources is available for deep_sort_realtime
+try:
+    import pkg_resources
+except ImportError:
+    try:
+        import setuptools
+        import pkg_resources
+    except ImportError:
+        pass
 
 import av
 import cv2
@@ -31,16 +52,18 @@ class Config:
 
 
 # =============================================================================
-# QUEUE MONITOR — same tracking logic, clean separation of detection & render
+# QUEUE MONITOR — tracking logic, clean separation of detection & render
 # =============================================================================
 class SmartQueueMonitor:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.device = "cuda" if cfg.use_gpu and torch.cuda.is_available() else "cpu"
 
-        self.model = YOLO(cfg.model_path).to(self.device)
+        self.model = YOLO(cfg.model_path)
         if self.device == "cuda":
-            self.model = self.model.half()
+            self.model = self.model.to(self.device).half()
+        else:
+            self.model = self.model.to(self.device)
 
         self.tracker = DeepSort(
             max_age=cfg.deep_sort_max_age,
@@ -177,20 +200,20 @@ class SmartQueueMonitor:
         """Draw zones, cached boxes, info panel. Runs on EVERY frame."""
         cfg = self.cfg
 
-        # Zone rectangles
-        cv2.rectangle(display, tuple(cfg.queue_roi[:2]), tuple(cfg.queue_roi[2:]), (0xFF, 0x4D, 0x00), 2)      # Copper
-        cv2.rectangle(display, tuple(cfg.service_roi[:2]), tuple(cfg.service_roi[2:]), (0x00, 0xC8, 0xC8), 2)    # Teal
+        # Zone rectangles (BGR)
+        cv2.rectangle(display, tuple(cfg.queue_roi[:2]), tuple(cfg.queue_roi[2:]), (0x00, 0x4D, 0xFF), 2)      # Copper (BGR)
+        cv2.rectangle(display, tuple(cfg.service_roi[:2]), tuple(cfg.service_roi[2:]), (0xC8, 0xC8, 0x00), 2)    # Teal (BGR)
 
-        # Tracked boxes
+        # Tracked boxes (BGR)
         for track_id, x1, y1, x2, y2 in self.cached_boxes:
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             q, s = cfg.queue_roi, cfg.service_roi
             if q[0] < cx < q[2] and q[1] < cy < q[3]:
-                color = (0xFF, 0x7A, 0x00)       # Copper queue
+                color = (0x00, 0x7A, 0xFF)       # Copper queue (BGR)
             elif s[0] < cx < s[2] and s[1] < cy < s[3]:
-                color = (0x00, 0xE8, 0xE8)       # Teal service
+                color = (0xE8, 0xE8, 0x00)       # Teal service (BGR)
             else:
-                color = (0x4A, 0xD0, 0x4A)       # Green other
+                color = (0x4A, 0xD0, 0x4A)       # Green other (BGR)
 
             cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
             label = f"ID {track_id}"
@@ -227,17 +250,21 @@ class SmartQueueMonitor:
         yy = y + 26
         step = 22
 
-        status_colors = {"LOW": (0x4A, 0xD0, 0x4A), "MEDIUM": (0xE8, 0xA8, 0x4B), "HIGH": (0xFF, 0x4D, 0x00)}
+        status_colors = {
+            "LOW": (0x4A, 0xD0, 0x4A),
+            "MEDIUM": (0x4B, 0xA8, 0xE8),
+            "HIGH": (0x00, 0x4D, 0xFF)
+        }
         sc = status_colors.get(s["status"], (0xAA, 0xAA, 0xAA))
 
-        put("Queue", str(s["queue"]), yy, (0x00, 0xC8, 0xC8)); yy += step
-        put("Wait", f"{int(s['wait'])} s", yy, (0xE8, 0xA8, 0x4B)); yy += step
+        put("Queue", str(s["queue"]), yy, (0xC8, 0xC8, 0x00)); yy += step
+        put("Wait", f"{int(s['wait'])} s", yy, (0x4B, 0xA8, 0xE8)); yy += step
         put("Status", s["status"], yy, sc); yy += step
-        put("In Service", str(s["service"]), yy, (0x00, 0xE8, 0xE8)); yy += step
+        put("In Service", str(s["service"]), yy, (0xE8, 0xE8, 0x00)); yy += step
         put("Served", str(s["served"]), yy, (0x4A, 0xD0, 0x4A)); yy += step
 
         if self.avg_service_time:
-            put("Avg Service", f"{self.avg_service_time:.1f} s", yy, (0x8A, 0x9B, 0xB0))
+            put("Avg Service", f"{self.avg_service_time:.1f} s", yy, (0xB0, 0x9B, 0x8A))
 
     # -------------------------------------------------------------- public
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -273,45 +300,70 @@ class QueueVideoProcessor:
 
 
 # =============================================================================
-# STREAMLIT APP — distinctive UI
+# STREAMLIT APP
 # =============================================================================
 st.set_page_config(
     page_title="Queue Monitor",
-    page_icon=":material/monitor_heart:",
+    page_icon="⏱️",
     layout="wide",
 )
 
-# ---- TURN/STUN Configuration (read from env for Render.com) ----
+# ---- Helper for backwards-compatible badge display ----
+def show_badge(label: str, icon: str = None, color: str = None):
+    if hasattr(st, "badge"):
+        st.badge(label, icon=icon, color=color)
+    else:
+        st.markdown(f"**[{label}]**")
+
+# ---- TURN/STUN Configuration (supports Streamlit Secrets and Env Vars) ----
 def get_rtc_config() -> RTCConfiguration:
-    """Build WebRTC config with TURN from environment variables."""
-    ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
-    
-    turn_url = os.getenv("TURN_URL")
-    turn_username = os.getenv("TURN_USERNAME")
-    turn_password = os.getenv("TURN_PASSWORD")
-    
+    """Build WebRTC config with STUN and optional TURN credentials."""
+    ice_servers = [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+    ]
+
+    turn_url = None
+    turn_username = None
+    turn_password = None
+
+    try:
+        if hasattr(st, "secrets"):
+            turn_url = st.secrets.get("TURN_URL")
+            turn_username = st.secrets.get("TURN_USERNAME")
+            turn_password = st.secrets.get("TURN_PASSWORD")
+    except Exception:
+        pass
+
+    turn_url = turn_url or os.getenv("TURN_URL")
+    turn_username = turn_username or os.getenv("TURN_USERNAME")
+    turn_password = turn_password or os.getenv("TURN_PASSWORD")
+
     if turn_url and turn_username and turn_password:
         ice_servers.append({
             "urls": [turn_url],
             "username": turn_username,
-            "credential": turn_password
+            "credential": turn_password,
         })
-    
+
     return RTCConfiguration({"iceServers": ice_servers})
 
 
 # ---- App header ----
-st.title("Smart Queue Monitor", icon=":material/monitor_heart:")
-st.caption("Live WebRTC feed · YOLOv8 + DeepSORT · Industrial monitoring")
+st.title("Smart Queue Monitor")
+st.caption("Live WebRTC feed · YOLOv8 + DeepSORT · Industrial Queue Monitoring")
 
 # ---- Sidebar: configuration only ----
 with st.sidebar:
-    st.header(":material/tune: Configuration")
+    st.header("⚙️ Configuration")
 
     has_gpu = torch.cuda.is_available()
-    st.badge("CUDA GPU" if has_gpu else "CPU Only",
-             icon=":material/check_circle:" if has_gpu else ":material/warning:",
-             color="green" if has_gpu else "orange")
+    show_badge(
+        "CUDA GPU" if has_gpu else "CPU Only",
+        icon=":material/check_circle:" if has_gpu else ":material/warning:",
+        color="green" if has_gpu else "orange",
+    )
 
     rtc_config = get_rtc_config()
 
@@ -330,11 +382,13 @@ with st.sidebar:
     st.subheader("Performance")
     conf_threshold = st.slider("Confidence", 0.1, 1.0, 0.45, 0.05, key="conf")
     min_height = st.slider("Min height (px)", 20, 200, 60, key="min_h")
-    frame_skip = st.slider("Detect every N frames", 1, 6, 3,
-                           help="Higher = less CPU, boxes update less often", key="fskip")
+    frame_skip = st.slider(
+        "Detect every N frames", 1, 6, 3,
+        help="Higher = less CPU, boxes update less often", key="fskip"
+    )
     process_width = st.select_slider("YOLO width", [256, 320, 416, 480], value=320, key="pw")
 
-    if st.button("Reset tracker", type="primary", icon=":material/restart_alt:"):
+    if st.button("Reset tracker", type="primary"):
         for key in ("monitor", "processor"):
             st.session_state.pop(key, None)
         st.rerun()
@@ -380,54 +434,55 @@ with video_col:
     )
     st.session_state.webrtc_ctx = webrtc_ctx
 
-# ---- Stats panel — auto-refresh fragment ----
-@st.fragment(run_every=1)
+# ---- Stats panel ----
 def live_stats():
     proc = st.session_state.get("processor")
     if proc is None:
         return
     s = proc.get_stats()
 
-    # KPI row — horizontal container with bordered metrics
-    with st.container(horizontal=True, horizontal_alignment="center", gap="small"):
-        st.metric("Queue", s["queue"], border=True)
-        st.metric("In Service", s["service"], border=True)
-        st.metric("Served", s["served"], border=True)
-        st.metric("Predicted Wait", f"{int(s['wait'])} s", border=True)
+    # KPI row
+    cols = st.columns(4)
+    cols[0].metric("Queue", s["queue"])
+    cols[1].metric("In Service", s["service"])
+    cols[2].metric("Served", s["served"])
+    cols[3].metric("Predicted Wait", f"{int(s['wait'])} s")
 
     # Status badge
     status_colors = {"LOW": "green", "MEDIUM": "orange", "HIGH": "red"}
     status_icons = {"LOW": ":material/check_circle:", "MEDIUM": ":material/schedule:", "HIGH": ":material/warning:"}
-    st.badge(
+    show_badge(
         f"Queue Status: {s['status']}",
         icon=status_icons.get(s["status"], ":material/help:"),
         color=status_colors.get(s["status"], "grey"),
     )
 
-    # Latency
     if s["proc_ms"] > 0:
         st.caption(f"Inference: {s['proc_ms']:.0f} ms per processed frame")
 
     ctx = st.session_state.get("webrtc_ctx")
     if ctx is not None and ctx.state.playing:
-        st.success(":material/wifi: WebRTC connected — live streaming", icon=":material/check_circle:")
+        st.success("WebRTC connected — live streaming")
     else:
-        st.warning(":material/wifi_off: Not connected — press START on the video player", icon=":material/wifi_off:")
+        st.info("Press **START** on the video player to connect your webcam.")
 
 
 with stats_col:
-    st.subheader(":material/analytics: Live Metrics")
-    live_stats()
+    st.subheader("📊 Live Metrics")
+    if hasattr(st, "fragment"):
+        st.fragment(run_every=1)(live_stats)()
+    else:
+        live_stats()
 
 # ---- Zone Legend ----
-with st.expander(":material/legend_toggle: Zone Legend", expanded=False):
+with st.expander("ℹ️ Zone Legend", expanded=False):
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown(
             """
             <div style="display:flex;align-items:center;gap:8px;padding:8px;">
                 <div style="width:16px;height:16px;background:#FF4D00;border-radius:2px;"></div>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">Queue Zone</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">Queue Zone (Copper)</span>
             </div>
             """, unsafe_allow_html=True)
     with c2:
@@ -435,7 +490,7 @@ with st.expander(":material/legend_toggle: Zone Legend", expanded=False):
             """
             <div style="display:flex;align-items:center;gap:8px;padding:8px;">
                 <div style="width:16px;height:16px;background:#00C8C8;border-radius:2px;"></div>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">Service Zone</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">Service Zone (Teal)</span>
             </div>
             """, unsafe_allow_html=True)
     with c3:
@@ -448,20 +503,20 @@ with st.expander(":material/legend_toggle: Zone Legend", expanded=False):
             """, unsafe_allow_html=True)
 
 # ---- How it works ----
-with st.expander(":material/info: How It Works"):
+with st.expander("📖 How It Works"):
     st.markdown(
         f"""
         1. Press **START** on the video player and allow camera access.
-        2. Every camera frame streams to Python over WebRTC (peer-to-peer UDP).
+        2. Every camera frame streams to Python over WebRTC.
         3. YOLOv8 + DeepSORT run every **{frame_skip} frames** at **{process_width}px** width.
            - Copper box = Queue Zone
            - Teal box = Service Zone
         4. Overlays are drawn from cached tracking state on **every frame**,
-           which is why boxes and the panel never flicker.
+           ensuring boxes and the panel never flicker.
         5. Wait prediction = people in queue × average service time ÷ open counters.
 
-        **Tuning**: If the image feels laggy, raise **Detect every N frames**
-        or lower **YOLO width**. If boxes drift, lower the frame skip again.
+        **Tuning**: If the video feels laggy, increase **Detect every N frames**
+        or lower **YOLO width**.
         """
     )
 
