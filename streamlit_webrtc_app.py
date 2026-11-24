@@ -1,16 +1,3 @@
-"""
-Smart Queue Monitor — Live WebRTC Dashboard
-Industrial monitoring aesthetic: copper accents, technical typography, zero fluff.
-Run: streamlit run streamlit_webrtc_app.py
-"""
-import sys
-# SHIM for pkg_resources missing in Python 3.12+
-try:
-    import pkg_resources
-except ImportError:
-    from unittest.mock import MagicMock
-    sys.modules["pkg_resources"] = MagicMock()
-
 import os
 import threading
 import time
@@ -294,28 +281,28 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---- App header ----
-st.title("Smart Queue Monitor", icon=":material/monitor_heart:")
-st.caption("Live WebRTC feed · YOLOv8 + DeepSORT · Industrial monitoring")
-
 # ---- TURN/STUN Configuration (read from env for Render.com) ----
 def get_rtc_config() -> RTCConfiguration:
     """Build WebRTC config with TURN from environment variables."""
     ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
-
+    
     turn_url = os.getenv("TURN_URL")
     turn_username = os.getenv("TURN_USERNAME")
     turn_password = os.getenv("TURN_PASSWORD")
-
+    
     if turn_url and turn_username and turn_password:
         ice_servers.append({
             "urls": [turn_url],
             "username": turn_username,
             "credential": turn_password
         })
-
+    
     return RTCConfiguration({"iceServers": ice_servers})
 
+
+# ---- App header ----
+st.title("Smart Queue Monitor", icon=":material/monitor_heart:")
+st.caption("Live WebRTC feed · YOLOv8 + DeepSORT · Industrial monitoring")
 
 # ---- Sidebar: configuration only ----
 with st.sidebar:
